@@ -825,6 +825,7 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
             }
         } else {
             $composeFile = $this->parseComposeFileForDeployment();
+            $this->validateRequiredComposeEnvironmentVariables();
             // Always add .env file to services
             $services = collect(data_get($composeFile, 'services', []));
             $services = $services->map(function ($service, $name) {
@@ -970,6 +971,47 @@ class ApplicationDeploymentJob implements ShouldBeEncrypted, ShouldQueue
         }
 
         return $composeFile;
+    }
+
+    /**
+     * Fails on required Compose variables (${VAR:?msg}, ${VAR?msg}) without a value. Required keys come
+     * from the production variables, because preview copies do not carry the flag. Values that equal
+     * the message (stored by earlier parsers) are kept, but the deployment log names them.
+     */
+    private function validateRequiredComposeEnvironmentVariables(): void
+    {
+        $composeRaw = (string) $this->application->docker_compose_raw;
+        $requiredKeys = $this->application->environment_variables()
+            ->where('is_required', true)
+            ->pluck('key')
+            ->filter(fn (string $key): bool => str_contains($composeRaw, '${'.$key.':?') || str_contains($composeRaw, '${'.$key.'?'));
+        $deploymentVariables = ($this->pull_request_id === 0
+            ? $this->application->environment_variables()
+            : $this->application->environment_variables_preview())
+            ->get()
+            ->keyBy('key');
+
+        $missingKeys = $requiredKeys
+            ->filter(fn (string $key): bool => blank($deploymentVariables->get($key)?->real_value))
+            ->values();
+        if ($missingKeys->isNotEmpty()) {
+            throw new DeploymentException('Required environment variables are not set: '.$missingKeys->implode(', ').'. Set them in the Environment Variables tab, then deploy again.');
+        }
+
+        $messageValueKeys = $deploymentVariables
+            ->filter(function (EnvironmentVariable $environmentVariable) use ($composeRaw): bool {
+                $value = (string) $environmentVariable->value;
+                if ($value === '') {
+                    return false;
+                }
+
+                return str_contains($composeRaw, '${'.$environmentVariable->key.':?'.$value.'}')
+                    || str_contains($composeRaw, '${'.$environmentVariable->key.'?'.$value.'}');
+            })
+            ->keys();
+        foreach ($messageValueKeys as $key) {
+            $this->application_deployment_queue->addLogEntry("Warning: {$key} is required by the compose file, but its value is the error message from the compose file. Set the real value in the Environment Variables tab.", 'stderr');
+        }
     }
 
     private function pull_docker_compose_images(): void

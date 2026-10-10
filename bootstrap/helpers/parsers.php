@@ -1701,13 +1701,14 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             $defaultValue = $split['default'];
                             $isRequired = str_contains($operator, '?');
 
-                            // Create the primary variable with its default (only if it doesn't exist)
+                            // Create the primary variable with its default (only if it doesn't exist).
+                            // For :? and ? the text after the operator is an error message, not a default.
                             $envVar = $resource->environment_variables()->firstOrCreate([
                                 'key' => $varName,
                                 'resourceable_type' => get_class($resource),
                                 'resourceable_id' => $resource->id,
                             ], [
-                                'value' => $defaultValue,
+                                'value' => $isRequired ? null : $defaultValue,
                                 'is_preview' => false,
                                 'is_required' => $isRequired,
                             ]);
@@ -1779,10 +1780,6 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             $value = replaceVariables($value);
                             $key = $value->before(':');
                             $value = $value->after(':-');
-                        } elseif ($value->contains('-')) {
-                            $value = replaceVariables($value);
-                            $key = $value->before('-');
-                            $value = $value->after('-');
                         } elseif ($value->contains(':?')) {
                             $value = replaceVariables($value);
                             $key = $value->before(':');
@@ -1793,6 +1790,10 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             $key = $value->before('?');
                             $value = $value->after('?');
                             $isRequired = true;
+                        } elseif ($value->contains('-')) {
+                            $value = replaceVariables($value);
+                            $key = $value->before('-');
+                            $value = $value->after('-');
                         }
                         if ($originalValue->value() === $value->value()) {
                             // This means the variable does not have a default value
@@ -1815,7 +1816,7 @@ function applicationParser(Application $resource, int $pull_request_id = 0, ?int
                             'resourceable_type' => get_class($resource),
                             'resourceable_id' => $resource->id,
                         ], [
-                            'value' => $value,
+                            'value' => $isRequired ? null : $value,
                             'is_preview' => false,
                             'is_required' => $isRequired,
                         ]);
